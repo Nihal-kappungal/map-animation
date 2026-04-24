@@ -40,9 +40,52 @@ const QUALITY_OPTIONS = [
   { value: '4k', label: '4K Ultra HD', width: 3840, bitrate: 50000000 }
 ];
 
+const EXPORT_FORMAT_OPTIONS = [
+  { value: 'mp4', label: 'MP4 (H.264)' },
+  { value: 'webm', label: 'WebM' }
+];
+
+const RECORDING_MIME_CANDIDATES = {
+  mp4: [
+    { mimeType: 'video/mp4; codecs="avc1.42E01E"', extension: 'mp4', label: 'MP4' },
+    { mimeType: 'video/mp4; codecs=avc1.42E01E', extension: 'mp4', label: 'MP4' },
+    { mimeType: 'video/mp4', extension: 'mp4', label: 'MP4' }
+  ],
+  webm: [
+    { mimeType: 'video/webm; codecs=h264', extension: 'webm', label: 'WebM H.264' },
+    { mimeType: 'video/webm; codecs=vp9', extension: 'webm', label: 'WebM VP9' },
+    { mimeType: 'video/webm; codecs=vp8', extension: 'webm', label: 'WebM VP8' },
+    { mimeType: 'video/webm', extension: 'webm', label: 'WebM' }
+  ]
+};
+
 const getQualityOption = (value) => (
   QUALITY_OPTIONS.find(option => option.value === value) || QUALITY_OPTIONS[1]
 );
+
+const getRecordingOptions = (format, videoBitsPerSecond) => {
+  const requestedCandidates = RECORDING_MIME_CANDIDATES[format] || RECORDING_MIME_CANDIDATES.webm;
+  const fallbackCandidates = format === 'webm' ? [] : RECORDING_MIME_CANDIDATES.webm;
+  const candidates = [...requestedCandidates, ...fallbackCandidates];
+
+  const selected = candidates.find(candidate => MediaRecorder.isTypeSupported(candidate.mimeType));
+
+  if (!selected) {
+    return {
+      options: { videoBitsPerSecond },
+      extension: 'webm',
+      label: 'browser default',
+      usedFallback: format !== 'webm'
+    };
+  }
+
+  return {
+    options: { mimeType: selected.mimeType, videoBitsPerSecond },
+    extension: selected.extension,
+    label: selected.label,
+    usedFallback: format !== selected.extension
+  };
+};
 
 const getCountryBounds = (country) => {
   let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
@@ -280,11 +323,13 @@ function App() {
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [previewQuality, setPreviewQuality] = useState('720p');
   const [exportQuality, setExportQuality] = useState('1080p');
+  const [exportFormat, setExportFormat] = useState('mp4');
   const [fps, setFps] = useState(60);
   const [earthScale, setEarthScale] = useState(1);
   const [resetBeforePlay, setResetBeforePlay] = useState(true);
   const [cameraArrived, setCameraArrived] = useState(false);
   const [labelAnimationStart, setLabelAnimationStart] = useState(0);
+  const [recordingNotice, setRecordingNotice] = useState('');
   
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
@@ -540,19 +585,15 @@ function App() {
     const bps = getQualityOption(exportQuality).bitrate;
 
     const stream = canvas.captureStream(fps);
-    let options = { videoBitsPerSecond: bps };
-    
-    // Prioritize hardware-accelerated codecs for smooth 60fps
-    if (MediaRecorder.isTypeSupported('video/webm; codecs=h264')) {
-      options.mimeType = 'video/webm; codecs=h264';
-    } else if (MediaRecorder.isTypeSupported('video/webm; codecs=vp8')) {
-      options.mimeType = 'video/webm; codecs=vp8';
-    } else {
-      options.mimeType = 'video/webm';
-    }
+    const recordingConfig = getRecordingOptions(exportFormat, bps);
+    setRecordingNotice(
+      recordingConfig.usedFallback
+        ? 'MP4 recording is not available in this browser, so this export will download as WebM.'
+        : ''
+    );
     
     try {
-      const mediaRecorder = new MediaRecorder(stream, options);
+      const mediaRecorder = new MediaRecorder(stream, recordingConfig.options);
       
       mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
@@ -562,13 +603,15 @@ function App() {
       
       mediaRecorder.onstop = () => {
         if (recordedChunksRef.current.length === 0) return;
-        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const blob = new Blob(recordedChunksRef.current, {
+          type: recordingConfig.options.mimeType || 'video/webm'
+        });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         document.body.appendChild(a);
         a.style = 'display: none';
         a.href = url;
-        a.download = `geo-animation-${Date.now()}.webm`;
+        a.download = `geo-animation-${Date.now()}.${recordingConfig.extension}`;
         a.click();
         window.URL.revokeObjectURL(url);
       };
@@ -577,8 +620,9 @@ function App() {
       mediaRecorderRef.current = mediaRecorder;
     } catch (e) {
       console.error("MediaRecorder error:", e);
+      setRecordingNotice('Recording failed. Try WebM, 1080p, or 30 FPS for a lighter export.');
     }
-  }, [exportQuality, fps]);
+  }, [exportFormat, exportQuality, fps]);
 
   const handlePlay = () => {
     if (selectedCountries.length === 0) return;
@@ -589,6 +633,7 @@ function App() {
     setEditingIso(null);
     setCurrentAnimIndex(-1);
     setCameraArrived(false);
+    setRecordingNotice('');
 
     if (resetBeforePlay) {
       resetCameraView(900);
@@ -836,6 +881,14 @@ function App() {
                 </select>
               </div>
               <div className="setting-row">
+                <span className="setting-label">Format</span>
+                <select className="settings-select" value={exportFormat} onChange={e => setExportFormat(e.target.value)} disabled={isPlaying}>
+                  {EXPORT_FORMAT_OPTIONS.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="setting-row">
                 <span className="setting-label">Framerate</span>
                 <select className="settings-select" value={fps} onChange={e => setFps(Number(e.target.value))} disabled={isPlaying}>
                   <option value={30}>30 FPS</option>
@@ -877,6 +930,9 @@ function App() {
                 <RotateCcw size={16} />
                 Reset View
               </button>
+              {recordingNotice && (
+                <div className="notice-text">{recordingNotice}</div>
+              )}
             </div>
 
             <div className="sidebar-divider" />
