@@ -336,6 +336,7 @@ function App() {
   const wrapperRef = useRef(null);
   const playStartTimeoutRef = useRef(null);
   const recordingFrameRef = useRef(null);
+  const captureFrameLoopRef = useRef(null);
   const [scale, setScale] = useState(1);
 
   const activeCountry = useMemo(() => {
@@ -529,6 +530,11 @@ function App() {
   }, [earthScale, isPlaying, editingIso, selectedCountries.length]);
 
   const stopRecording = useCallback(() => {
+    if (captureFrameLoopRef.current) {
+      cancelAnimationFrame(captureFrameLoopRef.current);
+      captureFrameLoopRef.current = null;
+    }
+
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
@@ -537,6 +543,7 @@ function App() {
   useEffect(() => () => {
     window.clearTimeout(playStartTimeoutRef.current);
     if (recordingFrameRef.current) cancelAnimationFrame(recordingFrameRef.current);
+    if (captureFrameLoopRef.current) cancelAnimationFrame(captureFrameLoopRef.current);
   }, []);
 
   useEffect(() => {
@@ -584,12 +591,17 @@ function App() {
 
     const bps = getQualityOption(exportQuality).bitrate;
 
-    const stream = canvas.captureStream(fps);
+    const manualStream = canvas.captureStream(0);
+    const manualTrack = manualStream.getVideoTracks()[0];
+    const canRequestFrames = typeof manualTrack?.requestFrame === 'function';
+    const stream = canRequestFrames ? manualStream : canvas.captureStream(fps);
     const recordingConfig = getRecordingOptions(exportFormat, bps);
     setRecordingNotice(
       recordingConfig.usedFallback
         ? 'MP4 recording is not available in this browser, so this export will download as WebM.'
-        : ''
+        : canRequestFrames
+          ? 'Using steady frame pacing for this export.'
+          : ''
     );
     
     try {
@@ -602,6 +614,10 @@ function App() {
       };
       
       mediaRecorder.onstop = () => {
+        if (captureFrameLoopRef.current) {
+          cancelAnimationFrame(captureFrameLoopRef.current);
+          captureFrameLoopRef.current = null;
+        }
         if (recordedChunksRef.current.length === 0) return;
         const blob = new Blob(recordedChunksRef.current, {
           type: recordingConfig.options.mimeType || 'video/webm'
@@ -618,6 +634,29 @@ function App() {
       
       mediaRecorder.start(500);
       mediaRecorderRef.current = mediaRecorder;
+
+      if (canRequestFrames) {
+        const frameInterval = 1000 / fps;
+        let nextFrameAt = performance.now();
+
+        const requestNextFrame = (now) => {
+          if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') return;
+
+          if (now >= nextFrameAt) {
+            manualTrack.requestFrame();
+            nextFrameAt += frameInterval;
+
+            if (now - nextFrameAt > frameInterval) {
+              nextFrameAt = now + frameInterval;
+            }
+          }
+
+          captureFrameLoopRef.current = requestAnimationFrame(requestNextFrame);
+        };
+
+        manualTrack.requestFrame();
+        captureFrameLoopRef.current = requestAnimationFrame(requestNextFrame);
+      }
     } catch (e) {
       console.error("MediaRecorder error:", e);
       setRecordingNotice('Recording failed. Try WebM, 1080p, or 30 FPS for a lighter export.');
