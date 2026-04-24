@@ -224,6 +224,17 @@ body {
   min-width: 0;
 }
 
+.checkbox-row {
+  cursor: pointer;
+}
+
+.checkbox-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
 .settings-select {
   flex: 1;
   background: rgba(0, 0, 0, 0.2);
@@ -409,6 +420,12 @@ body {
 
 .btn-secondary:hover {
   background: rgba(255, 255, 255, 0.15);
+}
+
+.btn-compact {
+  flex: none;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
 }
 
 /* Bottom bar */

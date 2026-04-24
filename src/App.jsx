@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import Globe from 'react-globe.gl';
-import { Search, Play, Square, Map as MapIcon, X } from 'lucide-react';
+import { RotateCcw, Search, Play, Square, Map as MapIcon, X } from 'lucide-react';
 import * as THREE from 'three';
 
 const EARTH_IMG_URL = '//unpkg.com/three-globe/example/img/earth-blue-marble.jpg';
@@ -33,6 +33,16 @@ const MAP_ANIMATION_OPTIONS = [
   { value: 'pulse', label: 'Pulse glow' },
   { value: 'none', label: 'None' }
 ];
+
+const QUALITY_OPTIONS = [
+  { value: '720p', label: '720p', width: 1280, bitrate: 2500000 },
+  { value: '1080p', label: '1080p HD', width: 1920, bitrate: 8000000 },
+  { value: '4k', label: '4K Ultra HD', width: 3840, bitrate: 50000000 }
+];
+
+const getQualityOption = (value) => (
+  QUALITY_OPTIONS.find(option => option.value === value) || QUALITY_OPTIONS[1]
+);
 
 const getCountryBounds = (country) => {
   let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
@@ -213,6 +223,7 @@ const createCountryBorderObject = (country, color, globe) => {
     group.add(line);
   });
 
+  group.userData.baseScale = group.scale.clone();
   return group;
 };
 
@@ -267,16 +278,19 @@ function App() {
   const [currentAnimIndex, setCurrentAnimIndex] = useState(-1);
 
   const [aspectRatio, setAspectRatio] = useState('16:9');
-  const [quality, setQuality] = useState('1080p');
+  const [previewQuality, setPreviewQuality] = useState('720p');
+  const [exportQuality, setExportQuality] = useState('1080p');
   const [fps, setFps] = useState(60);
   const [earthScale, setEarthScale] = useState(1);
+  const [resetBeforePlay, setResetBeforePlay] = useState(true);
   const [cameraArrived, setCameraArrived] = useState(false);
-  const [animationTime, setAnimationTime] = useState(0);
   const [labelAnimationStart, setLabelAnimationStart] = useState(0);
   
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
   const wrapperRef = useRef(null);
+  const playStartTimeoutRef = useRef(null);
+  const recordingFrameRef = useRef(null);
   const [scale, setScale] = useState(1);
 
   const activeCountry = useMemo(() => {
@@ -299,11 +313,17 @@ function App() {
     setCameraArrived(true);
   }, []);
 
+  const resetCameraView = useCallback((duration = 1000) => {
+    setEditingIso(null);
+    setCameraArrived(false);
+    if (globeEl.current) {
+      globeEl.current.pointOfView({ lat: 18, lng: 0, altitude: 2.5 / earthScale }, duration);
+    }
+  }, [earthScale]);
+
   const renderSize = useMemo(() => {
-    let base = 1920;
-    if (quality === '720p') base = 1280;
-    else if (quality === '1080p') base = 1920;
-    else if (quality === '4k') base = 3840;
+    const activeQuality = isPlaying ? exportQuality : previewQuality;
+    const base = getQualityOption(activeQuality).width;
 
     let w = base;
     let h = base * (9/16);
@@ -315,15 +335,13 @@ function App() {
       w = base;
       h = base;
     }
-    
-    const dpr = window.devicePixelRatio || 1;
     return { 
-      cssWidth: Math.round(w / dpr), 
-      cssHeight: Math.round(h / dpr),
+      cssWidth: Math.round(w), 
+      cssHeight: Math.round(h),
       actualWidth: Math.round(w),
       actualHeight: Math.round(h)
     };
-  }, [quality, aspectRatio]);
+  }, [previewQuality, exportQuality, aspectRatio, isPlaying]);
 
   useEffect(() => {
     const updateScale = () => {
@@ -344,19 +362,6 @@ function App() {
   }, [renderSize]);
 
   useEffect(() => {
-    if (!isPlaying && !editingIso) return undefined;
-
-    let frameId;
-    const tick = (time) => {
-      setAnimationTime(time / 1000);
-      frameId = requestAnimationFrame(tick);
-    };
-
-    frameId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frameId);
-  }, [isPlaying, editingIso]);
-
-  useEffect(() => {
     fetch(GEOJSON_URL)
       .then(res => res.json())
       .then(data => setCountriesData(data.features))
@@ -365,10 +370,14 @@ function App() {
 
   useEffect(() => {
     if (globeEl.current) {
+      const renderer = globeEl.current.renderer?.();
+      renderer?.setPixelRatio?.(1);
+
       const controls = globeEl.current.controls();
       controls.autoRotate = !isPlaying && !editingIso;
       controls.autoRotateSpeed = 0.5;
       controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
       controls.enableRotate = true;
       controls.enableZoom = true;
     }
@@ -480,6 +489,11 @@ function App() {
     }
   }, []);
 
+  useEffect(() => () => {
+    window.clearTimeout(playStartTimeoutRef.current);
+    if (recordingFrameRef.current) cancelAnimationFrame(recordingFrameRef.current);
+  }, []);
+
   useEffect(() => {
     let timeoutId1, timeoutId2;
     
@@ -499,7 +513,7 @@ function App() {
               setCameraArrived(false);
               stopRecording();
               if (globeEl.current) {
-                 globeEl.current.pointOfView({ altitude: 2.5 / earthScale }, 2000);
+                 globeEl.current.pointOfView({ lat: 18, lng: 0, altitude: 2.5 / earthScale }, 2000);
               }
             }, 3000);
           } else {
@@ -518,14 +532,12 @@ function App() {
     };
   }, [isPlaying, currentAnimIndex, selectedCountries, earthScale, flyToCountry, revealLabel, stopRecording]);
 
-  const startRecording = () => {
+  const startRecording = useCallback(() => {
     recordedChunksRef.current = [];
     const canvas = document.querySelector('.globe-container canvas');
     if (!canvas) return;
 
-    let bps = 8000000; 
-    if (quality === '4k') bps = 50000000; 
-    if (quality === '720p') bps = 2500000;
+    const bps = getQualityOption(exportQuality).bitrate;
 
     const stream = canvas.captureStream(fps);
     let options = { videoBitsPerSecond: bps };
@@ -566,24 +578,41 @@ function App() {
     } catch (e) {
       console.error("MediaRecorder error:", e);
     }
-  };
+  }, [exportQuality, fps]);
 
   const handlePlay = () => {
     if (selectedCountries.length === 0) return;
-    setEditingIso(null);
+    window.clearTimeout(playStartTimeoutRef.current);
+    if (recordingFrameRef.current) cancelAnimationFrame(recordingFrameRef.current);
+
     setIsPlaying(true);
-    setCurrentAnimIndex(0);
-    startRecording();
+    setEditingIso(null);
+    setCurrentAnimIndex(-1);
+    setCameraArrived(false);
+
+    if (resetBeforePlay) {
+      resetCameraView(900);
+    }
+
+    recordingFrameRef.current = requestAnimationFrame(() => {
+      recordingFrameRef.current = requestAnimationFrame(() => {
+        startRecording();
+      });
+    });
+
+    playStartTimeoutRef.current = window.setTimeout(() => {
+      setCurrentAnimIndex(0);
+    }, resetBeforePlay ? 950 : 0);
   };
   
   const handleStop = () => {
+    window.clearTimeout(playStartTimeoutRef.current);
+    if (recordingFrameRef.current) cancelAnimationFrame(recordingFrameRef.current);
     setIsPlaying(false);
     setCurrentAnimIndex(-1);
     setCameraArrived(false);
     stopRecording();
-    if (globeEl.current) {
-      globeEl.current.pointOfView({ altitude: 2.5 / earthScale }, 2000);
-    }
+    resetCameraView(2000);
   };
 
   const getPolygonAltitude = useCallback((feat) => {
@@ -592,16 +621,12 @@ function App() {
     const isEditing = !isPlaying && editingIso === feat.properties.ISO_A2;
     if (isActive || isEditing) {
       const style = selected?.mapAnimationStyle || 'borderMoving';
-      if (style === 'breathing') {
-        return 0.035 + (Math.sin(animationTime * 3.2) + 1) * 0.01;
-      }
-      if (style === 'pulse') {
-        return 0.03 + (Math.sin(animationTime * 5) + 1) * 0.006;
-      }
+      if (style === 'breathing') return 0.045;
+      if (style === 'pulse') return 0.04;
       return 0.035;
     }
     return 0.01;
-  }, [isPlaying, activeCountry, editingIso, selectedCountries, animationTime]);
+  }, [isPlaying, activeCountry, editingIso, selectedCountries]);
 
   const getPolygonColor = useCallback((feat) => {
     const selected = selectedCountries.find(c => c.properties.ISO_A2 === feat.properties.ISO_A2);
@@ -609,18 +634,12 @@ function App() {
     const isEditing = !isPlaying && editingIso === feat.properties.ISO_A2;
     
     if (isActive || isEditing) {
-      const style = selected?.mapAnimationStyle || 'borderMoving';
-      const animatedAlpha = style === 'breathing'
-        ? 0.38 + (Math.sin(animationTime * 3.2) + 1) * 0.16
-        : style === 'pulse'
-          ? 0.32 + (Math.sin(animationTime * 5) + 1) * 0.22
-          : 0.48;
-      return hexToRgba(selected ? selected.customColor : '#4F46E5', animatedAlpha);
+      return hexToRgba(selected ? selected.customColor : '#4F46E5', 0.5);
     } else if (selected) {
       return hexToRgba(selected.customColor, 0.15); 
     }
     return 'rgba(255, 255, 255, 0.05)';
-  }, [isPlaying, activeCountry, editingIso, selectedCountries, animationTime]);
+  }, [isPlaying, activeCountry, editingIso, selectedCountries]);
 
   const getPolygonStrokeColor = useCallback((feat) => {
     const selected = selectedCountries.find(c => c.properties.ISO_A2 === feat.properties.ISO_A2);
@@ -628,16 +647,12 @@ function App() {
     const isEditing = !isPlaying && editingIso === feat.properties.ISO_A2;
     
     if (isActive || isEditing) {
-      const style = selected?.mapAnimationStyle || 'borderMoving';
-      const alpha = style === 'borderMoving'
-        ? 0.5 + (Math.sin(animationTime * 8) + 1) * 0.25
-        : 0.9;
-      return hexToRgba(selected ? selected.customColor : '#818CF8', alpha);
+      return hexToRgba(selected ? selected.customColor : '#818CF8', 0.9);
     } else if (selected) {
       return hexToRgba(selected.customColor, 0.5);
     }
     return 'rgba(255, 255, 255, 0.15)';
-  }, [isPlaying, activeCountry, editingIso, selectedCountries, animationTime]);
+  }, [isPlaying, activeCountry, editingIso, selectedCountries]);
 
   const customLayerData = useMemo(() => {
     const targetCountry = isPlaying
@@ -690,6 +705,7 @@ function App() {
             ref={globeEl}
             width={renderSize.cssWidth}
             height={renderSize.cssHeight}
+            rendererConfig={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
             globeImageUrl={EARTH_IMG_URL}
             bumpImageUrl={BUMP_IMG_URL}
             backgroundImageUrl="//unpkg.com/three-globe/example/img/night-sky.png"
@@ -708,32 +724,45 @@ function App() {
             }}
             customThreeObjectUpdate={(obj, d) => {
               if (d.type === 'countryBorder') {
-                const style = d.animationStyle || 'borderMoving';
-                const pulse = (Math.sin(animationTime * 4) + 1) / 2;
+                obj.userData.animationStyle = d.animationStyle || 'borderMoving';
+                obj.userData.color = d.color;
                 obj.children.forEach((line) => {
-                  line.material.color.set(d.color);
-                  line.material.opacity = style === 'none'
-                    ? 0.8
-                    : style === 'breathing'
-                      ? 0.45 + pulse * 0.35
-                      : style === 'pulse'
-                        ? 0.35 + ((Math.sin(animationTime * 6) + 1) / 2) * 0.55
-                        : 0.65 + pulse * 0.25;
-                  line.material.dashOffset = style === 'borderMoving' ? -animationTime * 8 : 0;
+                  line.onBeforeRender = () => {
+                    const time = performance.now() / 1000;
+                    const style = obj.userData.animationStyle;
+                    const pulse = (Math.sin(time * 4) + 1) / 2;
+                    line.material.color.set(obj.userData.color);
+                    line.material.opacity = style === 'none'
+                      ? 0.8
+                      : style === 'breathing'
+                        ? 0.45 + pulse * 0.35
+                        : style === 'pulse'
+                          ? 0.35 + ((Math.sin(time * 6) + 1) / 2) * 0.55
+                          : 0.65 + pulse * 0.25;
+                    line.material.dashOffset = style === 'borderMoving' ? -time * 8 : 0;
+                    const scaleAmount = style === 'breathing' ? 1 + Math.sin(time * 3.2) * 0.012 : 1;
+                    obj.scale.copy(obj.userData.baseScale).multiplyScalar(scaleAmount);
+                  };
                 });
-                const scaleAmount = style === 'breathing' ? 1 + Math.sin(animationTime * 3.2) * 0.008 : 1;
-                obj.scale.setScalar(scaleAmount);
                 return;
               }
 
-              const elapsed = Math.max(0, animationTime - d.animationStart);
-              const animation = getLabelAnimationState(d.opts.labelAnimation, elapsed);
-              const coords = globeEl.current?.getCoords(d.lat, d.lng, d.altitude + animation.altitudeOffset);
-              if (coords) Object.assign(obj.position, coords);
-              obj.material.opacity = animation.opacity;
-              if (obj.userData.baseScale) {
-                obj.scale.copy(obj.userData.baseScale).multiplyScalar(animation.scale);
-              }
+              obj.userData.labelData = d;
+              obj.onBeforeRender = () => {
+                const labelData = obj.userData.labelData;
+                const elapsed = Math.max(0, performance.now() / 1000 - labelData.animationStart);
+                const animation = getLabelAnimationState(labelData.opts.labelAnimation, elapsed);
+                const coords = globeEl.current?.getCoords(
+                  labelData.lat,
+                  labelData.lng,
+                  labelData.altitude + animation.altitudeOffset
+                );
+                if (coords) Object.assign(obj.position, coords);
+                obj.material.opacity = animation.opacity;
+                if (obj.userData.baseScale) {
+                  obj.scale.copy(obj.userData.baseScale).multiplyScalar(animation.scale);
+                }
+              };
             }}
             atmosphereColor="#4F46E5"
             atmosphereAltitude={0.15}
@@ -791,11 +820,19 @@ function App() {
                 </select>
               </div>
               <div className="setting-row">
-                <span className="setting-label">Quality</span>
-                <select className="settings-select" value={quality} onChange={e => setQuality(e.target.value)} disabled={isPlaying}>
-                  <option value="720p">720p</option>
-                  <option value="1080p">1080p HD</option>
-                  <option value="4k">4K Ultra HD</option>
+                <span className="setting-label">Preview</span>
+                <select className="settings-select" value={previewQuality} onChange={e => setPreviewQuality(e.target.value)} disabled={isPlaying}>
+                  {QUALITY_OPTIONS.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="setting-row">
+                <span className="setting-label">Export</span>
+                <select className="settings-select" value={exportQuality} onChange={e => setExportQuality(e.target.value)} disabled={isPlaying}>
+                  {QUALITY_OPTIONS.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
                 </select>
               </div>
               <div className="setting-row">
@@ -803,6 +840,8 @@ function App() {
                 <select className="settings-select" value={fps} onChange={e => setFps(Number(e.target.value))} disabled={isPlaying}>
                   <option value={30}>30 FPS</option>
                   <option value={60}>60 FPS</option>
+                  <option value={120}>120 FPS</option>
+                  <option value={144}>144 FPS</option>
                 </select>
               </div>
               <div className="setting-row">
@@ -821,6 +860,23 @@ function App() {
                   <span className="slider-value">{earthScale.toFixed(1)}x</span>
                 </div>
               </div>
+              <label className="setting-row checkbox-row">
+                <span className="setting-label">Fresh Start</span>
+                <input
+                  type="checkbox"
+                  checked={resetBeforePlay}
+                  onChange={e => setResetBeforePlay(e.target.checked)}
+                  disabled={isPlaying}
+                />
+              </label>
+              <button
+                className="btn btn-secondary btn-compact"
+                onClick={() => resetCameraView()}
+                disabled={isPlaying}
+              >
+                <RotateCcw size={16} />
+                Reset View
+              </button>
             </div>
 
             <div className="sidebar-divider" />
