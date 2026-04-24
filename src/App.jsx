@@ -1,11 +1,38 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import Globe from 'react-globe.gl';
-import { Search, Play, Square, Map as MapIcon, X, Check, Camera, Edit2 } from 'lucide-react';
+import { Search, Play, Square, Map as MapIcon, X } from 'lucide-react';
 import * as THREE from 'three';
 
 const EARTH_IMG_URL = '//unpkg.com/three-globe/example/img/earth-blue-marble.jpg';
 const BUMP_IMG_URL = '//unpkg.com/three-globe/example/img/earth-topology.png';
 const GEOJSON_URL = 'https://raw.githubusercontent.com/vasturiano/react-globe.gl/master/example/datasets/ne_110m_admin_0_countries.geojson';
+
+const DEFAULT_TEXT_OPTIONS = {
+  fontSize: 64,
+  textColor: '#ffffff',
+  bgColor: '#0f172a',
+  bgOpacity: 0.7,
+  borderColor: '#4f46e5',
+  borderWidth: 2,
+  borderRadius: 12,
+  shadowBlur: 15,
+  labelAnimation: 'slideUp'
+};
+
+const LABEL_ANIMATION_OPTIONS = [
+  { value: 'none', label: 'None' },
+  { value: 'fadeInOut', label: 'Fade in / out' },
+  { value: 'slideUp', label: 'Slide up' },
+  { value: 'zoomPop', label: 'Zoom pop' },
+  { value: 'float', label: 'Float' }
+];
+
+const MAP_ANIMATION_OPTIONS = [
+  { value: 'borderMoving', label: 'Border moving' },
+  { value: 'breathing', label: 'Breathing' },
+  { value: 'pulse', label: 'Pulse glow' },
+  { value: 'none', label: 'None' }
+];
 
 const getCountryBounds = (country) => {
   let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
@@ -31,6 +58,29 @@ const getCountryBounds = (country) => {
   
   return { minLat, maxLat, minLng, maxLng, latSum: lat, lngSum: lng, pts };
 };
+
+const getCountryCenter = (country) => {
+  const bounds = getCountryBounds(country);
+  let lat = 0, lng = 0;
+
+  if (bounds.pts > 0) {
+    if (bounds.maxLng - bounds.minLng > 300) {
+      lat = bounds.latSum / bounds.pts;
+      lng = bounds.lngSum / bounds.pts;
+    } else {
+      lat = (bounds.minLat + bounds.maxLat) / 2;
+      lng = (bounds.minLng + bounds.maxLng) / 2;
+    }
+  }
+
+  let maxSpan = Math.max(bounds.maxLat - bounds.minLat, bounds.maxLng - bounds.minLng);
+  if (bounds.maxLng - bounds.minLng > 300) maxSpan = Math.max(bounds.maxLat - bounds.minLat, 60);
+
+  return { lat, lng, maxSpan, bounds };
+};
+
+const clamp = (value, min = 0, max = 1) => Math.min(Math.max(value, min), max);
+const easeOutCubic = (value) => 1 - Math.pow(1 - clamp(value), 3);
 
 const hexToRgba = (hex, alpha) => {
   const r = parseInt(hex.slice(1, 3), 16) || 0;
@@ -117,7 +167,92 @@ const createTextSprite = (text, opts) => {
   }
   
   sprite.scale.set(canvas.width * scaleFactor, canvas.height * scaleFactor, 1);
+  sprite.userData.baseScale = sprite.scale.clone();
   return sprite;
+};
+
+const getOuterRings = (country) => {
+  const geometry = country?.geometry;
+  if (!geometry) return [];
+
+  if (geometry.type === 'Polygon') {
+    return geometry.coordinates[0] ? [geometry.coordinates[0]] : [];
+  }
+
+  if (geometry.type === 'MultiPolygon') {
+    return geometry.coordinates
+      .map((polygon) => polygon[0])
+      .filter(Boolean);
+  }
+
+  return [];
+};
+
+const createCountryBorderObject = (country, color, globe) => {
+  const group = new THREE.Group();
+  const rings = getOuterRings(country);
+
+  rings.forEach((ring) => {
+    const points = ring
+      .map(([lng, lat]) => globe?.getCoords(lat, lng, 0.045))
+      .filter(Boolean);
+
+    if (points.length < 2) return;
+
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    const material = new THREE.LineDashedMaterial({
+      color,
+      transparent: true,
+      opacity: 0.9,
+      dashSize: 1.4,
+      gapSize: 0.7,
+      depthTest: false
+    });
+    const line = new THREE.Line(geometry, material);
+    line.computeLineDistances();
+    group.add(line);
+  });
+
+  return group;
+};
+
+const getLabelAnimationState = (style, elapsed) => {
+  if (style === 'fadeInOut') {
+    return {
+      opacity: 0.35 + (Math.sin(elapsed * 2.8) + 1) * 0.325,
+      scale: 1,
+      altitudeOffset: 0
+    };
+  }
+
+  if (style === 'slideUp') {
+    const progress = easeOutCubic(elapsed / 0.7);
+    return {
+      opacity: progress,
+      scale: 0.96 + progress * 0.04,
+      altitudeOffset: -0.045 * (1 - progress)
+    };
+  }
+
+  if (style === 'zoomPop') {
+    const progress = easeOutCubic(elapsed / 0.55);
+    const settle = Math.sin(clamp(elapsed / 0.55) * Math.PI) * 0.12;
+    return {
+      opacity: progress,
+      scale: 0.6 + progress * 0.4 + settle,
+      altitudeOffset: 0
+    };
+  }
+
+  if (style === 'float') {
+    return {
+      opacity: 1,
+      scale: 1,
+      altitudeOffset: Math.sin(elapsed * 2.2) * 0.018
+    };
+  }
+
+  return { opacity: 1, scale: 1, altitudeOffset: 0 };
 };
 
 function App() {
@@ -125,24 +260,44 @@ function App() {
   
   const [countriesData, setCountriesData] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
   const [selectedCountries, setSelectedCountries] = useState([]);
   const [editingIso, setEditingIso] = useState(null);
   
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentAnimIndex, setCurrentAnimIndex] = useState(-1);
-  const [activeCountry, setActiveCountry] = useState(null);
 
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [quality, setQuality] = useState('1080p');
   const [fps, setFps] = useState(60);
   const [earthScale, setEarthScale] = useState(1);
   const [cameraArrived, setCameraArrived] = useState(false);
+  const [animationTime, setAnimationTime] = useState(0);
+  const [labelAnimationStart, setLabelAnimationStart] = useState(0);
   
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
   const wrapperRef = useRef(null);
   const [scale, setScale] = useState(1);
+
+  const activeCountry = useMemo(() => {
+    if (!isPlaying || currentAnimIndex < 0) return null;
+    return selectedCountries[currentAnimIndex] || null;
+  }, [isPlaying, currentAnimIndex, selectedCountries]);
+
+  const searchResults = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+
+    const query = searchQuery.toLowerCase();
+    return countriesData.filter(country => 
+      country.properties.ADMIN.toLowerCase().includes(query) ||
+      country.properties.ISO_A2.toLowerCase().includes(query)
+    ).slice(0, 5);
+  }, [searchQuery, countriesData]);
+
+  const revealLabel = useCallback(() => {
+    setLabelAnimationStart(performance.now() / 1000);
+    setCameraArrived(true);
+  }, []);
 
   const renderSize = useMemo(() => {
     let base = 1920;
@@ -189,6 +344,19 @@ function App() {
   }, [renderSize]);
 
   useEffect(() => {
+    if (!isPlaying && !editingIso) return undefined;
+
+    let frameId;
+    const tick = (time) => {
+      setAnimationTime(time / 1000);
+      frameId = requestAnimationFrame(tick);
+    };
+
+    frameId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameId);
+  }, [isPlaying, editingIso]);
+
+  useEffect(() => {
     fetch(GEOJSON_URL)
       .then(res => res.json())
       .then(data => setCountriesData(data.features))
@@ -205,19 +373,6 @@ function App() {
       controls.enableZoom = true;
     }
   }, [isPlaying, editingIso]);
-
-  useEffect(() => {
-    if (!searchQuery.trim()) {
-      setSearchResults([]);
-      return;
-    }
-    const query = searchQuery.toLowerCase();
-    const results = countriesData.filter(country => 
-      country.properties.ADMIN.toLowerCase().includes(query) ||
-      country.properties.ISO_A2.toLowerCase().includes(query)
-    ).slice(0, 5);
-    setSearchResults(results);
-  }, [searchQuery, countriesData]);
 
   const flyToCountry = useCallback((country, duration = 1500) => {
     const bounds = getCountryBounds(country);
@@ -262,33 +417,21 @@ function App() {
       const newCountry = { 
         ...country, 
         customColor: '#4F46E5',
-        textOptions: {
-          fontSize: 64,
-          textColor: '#ffffff',
-          bgColor: '#0f172a',
-          bgOpacity: 0.7,
-          borderColor: '#4f46e5',
-          borderWidth: 2,
-          borderRadius: 12,
-          shadowBlur: 15
-        }
+        mapAnimationStyle: 'borderMoving',
+        textOptions: DEFAULT_TEXT_OPTIONS
       };
       setSelectedCountries([...selectedCountries, newCountry]);
       setEditingIso(country.properties.ISO_A2);
       if (!isPlaying) {
-         setCameraArrived(true); // show label right away for preview
+         revealLabel();
          flyToCountry(newCountry);
       }
     }
     setSearchQuery('');
-    setSearchResults([]);
   };
 
   const removeCountry = (isoA2) => {
     setSelectedCountries(selectedCountries.filter(c => c.properties.ISO_A2 !== isoA2));
-    if (activeCountry && activeCountry.properties.ISO_A2 === isoA2) {
-      setActiveCountry(null);
-    }
     if (editingIso === isoA2) {
       setEditingIso(null);
       setCameraArrived(false);
@@ -319,11 +462,23 @@ function App() {
     }));
   };
 
+  const updateMapAnimationStyle = (iso, style) => {
+    setSelectedCountries(selectedCountries.map(c => 
+      c.properties.ISO_A2 === iso ? { ...c, mapAnimationStyle: style } : c
+    ));
+  };
+
   useEffect(() => {
     if (!isPlaying && !editingIso && globeEl.current && selectedCountries.length === 0) {
       globeEl.current.pointOfView({ altitude: 2.5 / earthScale }, 1000);
     }
   }, [earthScale, isPlaying, editingIso, selectedCountries.length]);
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+  }, []);
 
   useEffect(() => {
     let timeoutId1, timeoutId2;
@@ -331,18 +486,16 @@ function App() {
     if (isPlaying && selectedCountries.length > 0) {
       if (currentAnimIndex >= 0 && currentAnimIndex < selectedCountries.length) {
         const targetCountry = selectedCountries[currentAnimIndex];
-        setActiveCountry(targetCountry);
         
         flyToCountry(targetCountry, 2500);
 
         timeoutId1 = setTimeout(() => {
-          setCameraArrived(true);
+          revealLabel();
 
           if (currentAnimIndex === selectedCountries.length - 1) {
             timeoutId2 = setTimeout(() => {
               setIsPlaying(false);
               setCurrentAnimIndex(-1);
-              setActiveCountry(null);
               setCameraArrived(false);
               stopRecording();
               if (globeEl.current) {
@@ -356,8 +509,6 @@ function App() {
             }, 3000);
           }
         }, 2500);
-      } else if (currentAnimIndex === -1) {
-         setCurrentAnimIndex(0);
       }
     }
     
@@ -365,7 +516,7 @@ function App() {
       clearTimeout(timeoutId1);
       clearTimeout(timeoutId2);
     };
-  }, [isPlaying, currentAnimIndex, selectedCountries, earthScale, flyToCountry]);
+  }, [isPlaying, currentAnimIndex, selectedCountries, earthScale, flyToCountry, revealLabel, stopRecording]);
 
   const startRecording = () => {
     recordedChunksRef.current = [];
@@ -417,24 +568,17 @@ function App() {
     }
   };
 
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    }
-  };
-
   const handlePlay = () => {
     if (selectedCountries.length === 0) return;
     setEditingIso(null);
     setIsPlaying(true);
-    setCurrentAnimIndex(-1);
+    setCurrentAnimIndex(0);
     startRecording();
   };
   
   const handleStop = () => {
     setIsPlaying(false);
     setCurrentAnimIndex(-1);
-    setActiveCountry(null);
     setCameraArrived(false);
     stopRecording();
     if (globeEl.current) {
@@ -443,11 +587,21 @@ function App() {
   };
 
   const getPolygonAltitude = useCallback((feat) => {
+    const selected = selectedCountries.find(c => c.properties.ISO_A2 === feat.properties.ISO_A2);
     const isActive = isPlaying && activeCountry && feat.properties.ISO_A2 === activeCountry.properties.ISO_A2;
     const isEditing = !isPlaying && editingIso === feat.properties.ISO_A2;
-    if (isActive || isEditing) return 0.035;
+    if (isActive || isEditing) {
+      const style = selected?.mapAnimationStyle || 'borderMoving';
+      if (style === 'breathing') {
+        return 0.035 + (Math.sin(animationTime * 3.2) + 1) * 0.01;
+      }
+      if (style === 'pulse') {
+        return 0.03 + (Math.sin(animationTime * 5) + 1) * 0.006;
+      }
+      return 0.035;
+    }
     return 0.01;
-  }, [isPlaying, activeCountry, editingIso]);
+  }, [isPlaying, activeCountry, editingIso, selectedCountries, animationTime]);
 
   const getPolygonColor = useCallback((feat) => {
     const selected = selectedCountries.find(c => c.properties.ISO_A2 === feat.properties.ISO_A2);
@@ -455,12 +609,18 @@ function App() {
     const isEditing = !isPlaying && editingIso === feat.properties.ISO_A2;
     
     if (isActive || isEditing) {
-      return hexToRgba(selected ? selected.customColor : '#4F46E5', 0.6);
+      const style = selected?.mapAnimationStyle || 'borderMoving';
+      const animatedAlpha = style === 'breathing'
+        ? 0.38 + (Math.sin(animationTime * 3.2) + 1) * 0.16
+        : style === 'pulse'
+          ? 0.32 + (Math.sin(animationTime * 5) + 1) * 0.22
+          : 0.48;
+      return hexToRgba(selected ? selected.customColor : '#4F46E5', animatedAlpha);
     } else if (selected) {
       return hexToRgba(selected.customColor, 0.15); 
     }
     return 'rgba(255, 255, 255, 0.05)';
-  }, [isPlaying, activeCountry, editingIso, selectedCountries]);
+  }, [isPlaying, activeCountry, editingIso, selectedCountries, animationTime]);
 
   const getPolygonStrokeColor = useCallback((feat) => {
     const selected = selectedCountries.find(c => c.properties.ISO_A2 === feat.properties.ISO_A2);
@@ -468,52 +628,50 @@ function App() {
     const isEditing = !isPlaying && editingIso === feat.properties.ISO_A2;
     
     if (isActive || isEditing) {
-      return selected ? selected.customColor : '#818CF8';
+      const style = selected?.mapAnimationStyle || 'borderMoving';
+      const alpha = style === 'borderMoving'
+        ? 0.5 + (Math.sin(animationTime * 8) + 1) * 0.25
+        : 0.9;
+      return hexToRgba(selected ? selected.customColor : '#818CF8', alpha);
     } else if (selected) {
       return hexToRgba(selected.customColor, 0.5);
     }
     return 'rgba(255, 255, 255, 0.15)';
-  }, [isPlaying, activeCountry, editingIso, selectedCountries]);
+  }, [isPlaying, activeCountry, editingIso, selectedCountries, animationTime]);
 
-  const labelData = useMemo(() => {
-    let targetCountry = null;
-    if (isPlaying) {
-       targetCountry = activeCountry;
-       if (!targetCountry || !cameraArrived) return [];
-    } else {
-       if (editingIso) {
-          targetCountry = selectedCountries.find(c => c.properties.ISO_A2 === editingIso);
-          if (!targetCountry || !cameraArrived) return [];
-       } else {
-          return [];
-       }
-    }
+  const customLayerData = useMemo(() => {
+    const targetCountry = isPlaying
+      ? activeCountry
+      : editingIso
+        ? selectedCountries.find(c => c.properties.ISO_A2 === editingIso)
+        : null;
 
-    const bounds = getCountryBounds(targetCountry);
-    let lat = 0, lng = 0;
-    
-    if (bounds.pts > 0) {
-      if (bounds.maxLng - bounds.minLng > 300) {
-        lat = bounds.latSum / bounds.pts;
-        lng = bounds.lngSum / bounds.pts;
-      } else {
-        lat = (bounds.minLat + bounds.maxLat) / 2;
-        lng = (bounds.minLng + bounds.maxLng) / 2;
-      }
-    }
-    
-    let maxSpan = Math.max(bounds.maxLat - bounds.minLat, bounds.maxLng - bounds.minLng);
-    if (bounds.maxLng - bounds.minLng > 300) maxSpan = Math.max(bounds.maxLat - bounds.minLat, 60);
+    if (!targetCountry) return [];
 
-    return [{ 
-      id: targetCountry.properties.ISO_A2 + JSON.stringify(targetCountry.textOptions), 
+    const { lat, lng, maxSpan } = getCountryCenter(targetCountry);
+    const layerItems = [{
+      type: 'countryBorder',
+      id: `border-${targetCountry.properties.ISO_A2}-${targetCountry.customColor}-${targetCountry.mapAnimationStyle}`,
+      country: targetCountry,
+      color: targetCountry.customColor || '#4F46E5',
+      animationStyle: targetCountry.mapAnimationStyle || 'borderMoving'
+    }];
+
+    if (!cameraArrived) return layerItems;
+
+    layerItems.push({ 
+      type: 'label',
+      id: `label-${targetCountry.properties.ISO_A2}-${JSON.stringify(targetCountry.textOptions)}`, 
       lat, 
       lng, 
       altitude: 0.08, 
       text: targetCountry.properties.ADMIN,
+      animationStart: labelAnimationStart,
       opts: { ...targetCountry.textOptions, maxSpan } 
-    }];
-  }, [activeCountry, cameraArrived, isPlaying, editingIso, selectedCountries]);
+    });
+
+    return layerItems;
+  }, [activeCountry, cameraArrived, isPlaying, editingIso, selectedCountries, labelAnimationStart]);
 
   return (
     <div className="app-container">
@@ -541,10 +699,41 @@ function App() {
             polygonSideColor={() => 'rgba(0, 0, 0, 0.1)'}
             polygonStrokeColor={getPolygonStrokeColor}
             polygonsTransitionDuration={600}
-            customLayerData={labelData}
-            customThreeObject={(d) => createTextSprite(d.text, d.opts)}
+            customLayerData={customLayerData}
+            customThreeObject={(d) => {
+              if (d.type === 'countryBorder') {
+                return createCountryBorderObject(d.country, d.color, globeEl.current);
+              }
+              return createTextSprite(d.text, d.opts);
+            }}
             customThreeObjectUpdate={(obj, d) => {
-              Object.assign(obj.position, globeEl.current?.getCoords(d.lat, d.lng, d.altitude));
+              if (d.type === 'countryBorder') {
+                const style = d.animationStyle || 'borderMoving';
+                const pulse = (Math.sin(animationTime * 4) + 1) / 2;
+                obj.children.forEach((line) => {
+                  line.material.color.set(d.color);
+                  line.material.opacity = style === 'none'
+                    ? 0.8
+                    : style === 'breathing'
+                      ? 0.45 + pulse * 0.35
+                      : style === 'pulse'
+                        ? 0.35 + ((Math.sin(animationTime * 6) + 1) / 2) * 0.55
+                        : 0.65 + pulse * 0.25;
+                  line.material.dashOffset = style === 'borderMoving' ? -animationTime * 8 : 0;
+                });
+                const scaleAmount = style === 'breathing' ? 1 + Math.sin(animationTime * 3.2) * 0.008 : 1;
+                obj.scale.setScalar(scaleAmount);
+                return;
+              }
+
+              const elapsed = Math.max(0, animationTime - d.animationStart);
+              const animation = getLabelAnimationState(d.opts.labelAnimation, elapsed);
+              const coords = globeEl.current?.getCoords(d.lat, d.lng, d.altitude + animation.altitudeOffset);
+              if (coords) Object.assign(obj.position, coords);
+              obj.material.opacity = animation.opacity;
+              if (obj.userData.baseScale) {
+                obj.scale.copy(obj.userData.baseScale).multiplyScalar(animation.scale);
+              }
             }}
             atmosphereColor="#4F46E5"
             atmosphereAltitude={0.15}
@@ -666,7 +855,7 @@ function App() {
                                     setCameraArrived(false);
                                 } else {
                                     setEditingIso(country.properties.ISO_A2);
-                                    setCameraArrived(true);
+                                    revealLabel();
                                     flyToCountry(country);
                                 }
                              }
@@ -699,6 +888,34 @@ function App() {
 
                         {isEditing && !isPlaying && (
                           <div className="label-editing-panel">
+                            <div className="panel-header">Animation Options</div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Map Style</span>
+                              <select
+                                className="settings-select"
+                                value={country.mapAnimationStyle || 'borderMoving'}
+                                onChange={e => updateMapAnimationStyle(country.properties.ISO_A2, e.target.value)}
+                              >
+                                {MAP_ANIMATION_OPTIONS.map(option => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Label Motion</span>
+                              <select
+                                className="settings-select"
+                                value={country.textOptions.labelAnimation || 'slideUp'}
+                                onChange={e => updateTextOpts(country.properties.ISO_A2, 'labelAnimation', e.target.value)}
+                              >
+                                {LABEL_ANIMATION_OPTIONS.map(option => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </div>
+
                             <div className="panel-header">Label Options</div>
                             
                             <div className="setting-row">

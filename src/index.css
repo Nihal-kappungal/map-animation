@@ -288,8 +288,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  max-height: 160px;
-  overflow-y: auto;
+  max-height: none;
+  overflow: visible;
 }
 
 .country-item {
@@ -478,7 +478,7 @@ body {
   padding: 0.75rem;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.55rem;
   margin-left: 0.5rem;
   margin-right: 0.5rem;
 }
@@ -487,7 +487,11 @@ body {
   font-size: 0.7rem;
   color: var(--primary);
   font-weight: 600;
-  margin-bottom: 0.25rem;
+  margin: 0.25rem 0 0.1rem;
   text-transform: uppercase;
+}
+
+.panel-header:first-child {
+  margin-top: 0;
 }
 
