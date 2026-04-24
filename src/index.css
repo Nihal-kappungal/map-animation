@@ -92,7 +92,7 @@ body {
   top: 1.5rem;
   right: 1.5rem;
   bottom: 1.5rem;
-  width: 320px;
+  width: 360px;
   pointer-events: auto;
   padding: 0;
   display: flex;
@@ -545,5 +545,15 @@ body {
 
 .panel-header:first-child {
   margin-top: 0;
+}
+
+.effect-panel {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.7rem;
 }
 

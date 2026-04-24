@@ -26,7 +26,30 @@ const DEFAULT_TEXT_OPTIONS = {
   subtitleTextColor: '#dbeafe',
   subtitleBgColor: '#020617',
   subtitleBgOpacity: 0.58,
-  subtitleAnimation: 'fadeInOut'
+  subtitleAnimation: 'fadeInOut',
+  subtitleOffsetX: 0,
+  subtitleOffsetY: -5,
+  subtitleAltitude: 0
+};
+
+const DEFAULT_ROUTE_OPTIONS = {
+  enabled: true,
+  color: '#93c5fd',
+  opacity: 0.72,
+  stroke: 0.35,
+  altitude: 0.28,
+  dashLength: 0.9,
+  dashGap: 0.15,
+  animateTime: 0
+};
+
+const DEFAULT_ARROW_OPTIONS = {
+  enabled: true,
+  color: '#ffffff',
+  opacity: 0.95,
+  size: 1,
+  altitude: 0.38,
+  speed: 1
 };
 
 const FONT_OPTIONS = [
@@ -263,32 +286,18 @@ const createTextSprite = (text, opts) => {
   return sprite;
 };
 
-const createArrowSprite = (color) => {
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  const size = 96;
-
-  canvas.width = size;
-  canvas.height = size;
-  ctx.translate(size / 2, size / 2);
-  ctx.fillStyle = color;
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
-  ctx.shadowBlur = 12;
-  ctx.beginPath();
-  ctx.moveTo(32, 0);
-  ctx.lineTo(-22, -28);
-  ctx.lineTo(-10, 0);
-  ctx.lineTo(-22, 28);
-  ctx.closePath();
-  ctx.fill();
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.minFilter = THREE.LinearFilter;
-  const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true });
-  const sprite = new THREE.Sprite(material);
-  sprite.scale.set(7, 7, 1);
-  sprite.userData.baseScale = sprite.scale.clone();
-  return sprite;
+const createRouteArrowObject = (color, size = 1) => {
+  const geometry = new THREE.ConeGeometry(1.5 * size, 4.6 * size, 28);
+  const material = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.95,
+    depthTest: false
+  });
+  const arrow = new THREE.Mesh(geometry, material);
+  arrow.renderOrder = 20;
+  arrow.userData.forward = new THREE.Vector3(0, 1, 0);
+  return arrow;
 };
 
 const getOuterRings = (country) => {
@@ -393,8 +402,8 @@ function App() {
   const [exportFormat, setExportFormat] = useState('webm');
   const [fps, setFps] = useState(60);
   const [earthScale, setEarthScale] = useState(1);
-  const [showRouteLines, setShowRouteLines] = useState(true);
-  const [showTransitionArrow, setShowTransitionArrow] = useState(true);
+  const [routeOptions, setRouteOptions] = useState(DEFAULT_ROUTE_OPTIONS);
+  const [arrowOptions, setArrowOptions] = useState(DEFAULT_ARROW_OPTIONS);
   const [resetBeforePlay, setResetBeforePlay] = useState(true);
   const [cameraArrived, setCameraArrived] = useState(false);
   const [labelAnimationStart, setLabelAnimationStart] = useState(0);
@@ -590,6 +599,14 @@ function App() {
     setSelectedCountries(selectedCountries.map(c => 
       c.properties.ISO_A2 === iso ? { ...c, mapAnimationStyle: style } : c
     ));
+  };
+
+  const updateRouteOption = (key, value) => {
+    setRouteOptions(options => ({ ...options, [key]: value }));
+  };
+
+  const updateArrowOption = (key, value) => {
+    setArrowOptions(options => ({ ...options, [key]: value }));
   };
 
   useEffect(() => {
@@ -826,14 +843,17 @@ function App() {
       animationStyle: targetCountry.mapAnimationStyle || 'borderMoving'
     }];
 
-    if (showTransitionArrow && isPlaying && currentAnimIndex > 0) {
+    if (arrowOptions.enabled && isPlaying && currentAnimIndex > 0) {
+      const previousCountry = selectedCountries[currentAnimIndex - 1];
+      const start = getCountryCenter(previousCountry);
       layerItems.push({
         type: 'transitionArrow',
-        id: `arrow-${targetCountry.properties.ISO_A2}-${targetCountry.customColor}`,
-        lat,
-        lng,
-        altitude: 0.16,
-        color: targetCountry.customColor || '#4F46E5',
+        id: `arrow-${previousCountry.properties.ISO_A2}-${targetCountry.properties.ISO_A2}-${arrowOptions.color}-${arrowOptions.size}`,
+        startLat: start.lat,
+        startLng: start.lng,
+        endLat: lat,
+        endLng: lng,
+        options: arrowOptions,
         animationStart: labelAnimationStart
       });
     }
@@ -858,9 +878,10 @@ function App() {
         lat,
         lng,
         altitude: 0.075,
-        verticalOffset: Math.max(2.5, Math.min(maxSpan * 0.08, 9)),
         text: textOptions.subtitleText.trim(),
         animationStart: labelAnimationStart + 0.18,
+        offsetX: textOptions.subtitleOffsetX || 0,
+        offsetY: textOptions.subtitleOffsetY ?? -5,
         opts: {
           maxSpan,
           fontSize: textOptions.subtitleFontSize,
@@ -873,7 +894,8 @@ function App() {
           borderWidth: Math.max(1, Math.floor(textOptions.borderWidth / 2)),
           borderRadius: textOptions.borderRadius,
           shadowBlur: Math.max(8, textOptions.shadowBlur * 0.65),
-          labelAnimation: textOptions.subtitleAnimation
+          labelAnimation: textOptions.subtitleAnimation,
+          subtitleAltitude: textOptions.subtitleAltitude || 0
         }
       });
     }
@@ -887,13 +909,13 @@ function App() {
     editingIso,
     selectedCountries,
     labelAnimationStart,
-    showTransitionArrow
+    arrowOptions
   ]);
 
   const arcData = useMemo(() => {
     const arcs = [];
 
-    if (showRouteLines) {
+    if (routeOptions.enabled) {
       for (let index = 1; index < selectedCountries.length; index += 1) {
         const previous = selectedCountries[index - 1];
         const next = selectedCountries[index];
@@ -907,13 +929,17 @@ function App() {
           startLng: start.lng,
           endLat: end.lat,
           endLng: end.lng,
-          color: [hexToRgba(previous.customColor, 0.35), hexToRgba(next.customColor, 0.75)],
-          altitude: 0.28
+          color: hexToRgba(routeOptions.color, routeOptions.opacity),
+          altitude: routeOptions.altitude,
+          stroke: routeOptions.stroke,
+          dashLength: routeOptions.dashLength,
+          dashGap: routeOptions.dashGap,
+          animateTime: routeOptions.animateTime
         });
       }
     }
 
-    if (showTransitionArrow && isPlaying && currentAnimIndex > 0 && activeCountry) {
+    if (arrowOptions.enabled && isPlaying && currentAnimIndex > 0 && activeCountry) {
       const previous = selectedCountries[currentAnimIndex - 1];
       const start = getCountryCenter(previous);
       const end = getCountryCenter(activeCountry);
@@ -922,16 +948,20 @@ function App() {
         id: `transition-${previous.properties.ISO_A2}-${activeCountry.properties.ISO_A2}`,
         type: 'transition',
         startLat: start.lat,
-        startLng: start.lng,
-        endLat: end.lat,
-        endLng: end.lng,
-        color: ['rgba(255, 255, 255, 0.2)', activeCountry.customColor],
-        altitude: 0.36
-      });
-    }
+          startLng: start.lng,
+          endLat: end.lat,
+          endLng: end.lng,
+          color: hexToRgba(arrowOptions.color, arrowOptions.opacity),
+          altitude: arrowOptions.altitude,
+          stroke: Math.max(routeOptions.stroke, 0.5) * 1.15,
+          dashLength: 0.28,
+          dashGap: 0.08,
+          animateTime: Math.max(500, 1200 / arrowOptions.speed)
+        });
+      }
 
     return arcs;
-  }, [activeCountry, currentAnimIndex, isPlaying, selectedCountries, showRouteLines, showTransitionArrow]);
+  }, [activeCountry, arrowOptions, currentAnimIndex, isPlaying, routeOptions, selectedCountries]);
 
   return (
     <div className="app-container">
@@ -967,11 +997,11 @@ function App() {
             arcEndLng="endLng"
             arcColor="color"
             arcAltitude="altitude"
-            arcStroke={(d) => d.type === 'transition' ? 0.8 : 0.35}
-            arcDashLength={(d) => d.type === 'transition' ? 0.28 : 0.9}
-            arcDashGap={(d) => d.type === 'transition' ? 0.08 : 0.15}
+            arcStroke="stroke"
+            arcDashLength="dashLength"
+            arcDashGap="dashGap"
             arcDashInitialGap={(d) => d.type === 'transition' ? 0 : 0.05}
-            arcDashAnimateTime={(d) => d.type === 'transition' ? 1200 : 0}
+            arcDashAnimateTime="animateTime"
             arcsTransitionDuration={800}
             customLayerData={customLayerData}
             customThreeObject={(d) => {
@@ -979,7 +1009,7 @@ function App() {
                 return createCountryBorderObject(d.country, d.color, globeEl.current);
               }
               if (d.type === 'transitionArrow') {
-                return createArrowSprite(d.color);
+                return createRouteArrowObject(d.options.color, d.options.size);
               }
               return createTextSprite(d.text, d.opts);
             }}
@@ -1012,32 +1042,56 @@ function App() {
                 obj.userData.arrowData = d;
                 obj.onBeforeRender = () => {
                   const arrowData = obj.userData.arrowData;
+                  const options = arrowData.options;
                   const elapsed = Math.max(0, performance.now() / 1000 - arrowData.animationStart);
-                  const progress = easeOutCubic(elapsed / 0.75);
-                  const coords = globeEl.current?.getCoords(arrowData.lat, arrowData.lng, arrowData.altitude);
-                  if (coords) Object.assign(obj.position, coords);
-                  obj.material.opacity = 0.25 + progress * 0.75;
-                  obj.rotation.z = Math.sin(elapsed * 3) * 0.08;
-                  if (obj.userData.baseScale) {
-                    obj.scale.copy(obj.userData.baseScale).multiplyScalar(0.6 + progress * 0.4);
-                  }
+                  const progress = easeOutCubic(Math.min(elapsed * options.speed / 1.35, 1));
+                  const startCoords = globeEl.current?.getCoords(arrowData.startLat, arrowData.startLng, 0);
+                  const endCoords = globeEl.current?.getCoords(arrowData.endLat, arrowData.endLng, 0);
+                  if (!startCoords || !endCoords) return;
+
+                  const startVector = new THREE.Vector3(startCoords.x, startCoords.y, startCoords.z);
+                  const endVector = new THREE.Vector3(endCoords.x, endCoords.y, endCoords.z);
+                  const startDirection = startVector.clone().normalize();
+                  const endDirection = endVector.clone().normalize();
+                  const radius = startVector.length();
+                  const height = 1 + options.altitude + Math.sin(progress * Math.PI) * 0.18;
+                  const currentDirection = startDirection.clone().slerp(endDirection, progress).normalize();
+                  const tangentProgress = progress > 0.985
+                    ? Math.max(progress - 0.015, 0)
+                    : Math.min(progress + 0.015, 1);
+                  const nextDirection = startDirection.clone().slerp(endDirection, tangentProgress).normalize();
+                  const position = currentDirection.clone().multiplyScalar(radius * height);
+                  const nextPosition = nextDirection.clone().multiplyScalar(radius * height);
+                  const tangent = progress > 0.985
+                    ? position.clone().sub(nextPosition).normalize()
+                    : nextPosition.sub(position).normalize();
+
+                  obj.position.copy(position);
+                  obj.quaternion.setFromUnitVectors(obj.userData.forward, tangent);
+                  obj.material.color.set(options.color);
+                  obj.material.opacity = options.opacity;
+                  const scale = 0.75 + Math.sin(progress * Math.PI) * 0.22;
+                  obj.scale.setScalar(scale);
                 };
                 return;
               }
 
               obj.userData.labelData = d;
-              obj.onBeforeRender = () => {
+              obj.onBeforeRender = (_renderer, _scene, camera) => {
                 const labelData = obj.userData.labelData;
                 const elapsed = Math.max(0, performance.now() / 1000 - labelData.animationStart);
                 const animation = getLabelAnimationState(labelData.opts.labelAnimation, elapsed);
                 const coords = globeEl.current?.getCoords(
                   labelData.lat,
                   labelData.lng,
-                  labelData.altitude + animation.altitudeOffset
+                  labelData.altitude + (labelData.opts.subtitleAltitude || 0) + animation.altitudeOffset
                 );
                 if (coords) Object.assign(obj.position, coords);
-                if (labelData.verticalOffset) {
-                  obj.position.y -= labelData.verticalOffset;
+                if (labelData.offsetX || labelData.offsetY) {
+                  const screenRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+                  const screenUp = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+                  obj.position.addScaledVector(screenRight, labelData.offsetX || 0);
+                  obj.position.addScaledVector(screenUp, labelData.offsetY || 0);
                 }
                 obj.material.opacity = animation.opacity;
                 if (obj.userData.baseScale) {
@@ -1150,24 +1204,6 @@ function App() {
                 </div>
               </div>
               <label className="setting-row checkbox-row">
-                <span className="setting-label">Route Lines</span>
-                <input
-                  type="checkbox"
-                  checked={showRouteLines}
-                  onChange={e => setShowRouteLines(e.target.checked)}
-                  disabled={isPlaying}
-                />
-              </label>
-              <label className="setting-row checkbox-row">
-                <span className="setting-label">Switch Arrow</span>
-                <input
-                  type="checkbox"
-                  checked={showTransitionArrow}
-                  onChange={e => setShowTransitionArrow(e.target.checked)}
-                  disabled={isPlaying}
-                />
-              </label>
-              <label className="setting-row checkbox-row">
                 <span className="setting-label">Fresh Start</span>
                 <input
                   type="checkbox"
@@ -1187,6 +1223,81 @@ function App() {
               {recordingNotice && (
                 <div className="notice-text">{recordingNotice}</div>
               )}
+            </div>
+
+            <div className="sidebar-divider" />
+
+            <div className="sidebar-section">
+              <label className="section-label">Scene Add-ons</label>
+
+              <div className="effect-panel">
+                <label className="setting-row checkbox-row">
+                  <span className="setting-label">Route Lines</span>
+                  <input
+                    type="checkbox"
+                    checked={routeOptions.enabled}
+                    onChange={e => updateRouteOption('enabled', e.target.checked)}
+                    disabled={isPlaying}
+                  />
+                </label>
+                <div className="setting-row">
+                  <span className="setting-label">Color</span>
+                  <input type="color" className="color-picker" value={routeOptions.color} onChange={e => updateRouteOption('color', e.target.value)} disabled={isPlaying} />
+                </div>
+                <div className="setting-row">
+                  <span className="setting-label">Opacity</span>
+                  <input type="range" className="slider" min="0.1" max="1" step="0.05" value={routeOptions.opacity} onChange={e => updateRouteOption('opacity', Number(e.target.value))} disabled={isPlaying} />
+                </div>
+                <div className="setting-row">
+                  <span className="setting-label">Thickness</span>
+                  <input type="range" className="slider" min="0.1" max="1.5" step="0.05" value={routeOptions.stroke} onChange={e => updateRouteOption('stroke', Number(e.target.value))} disabled={isPlaying} />
+                </div>
+                <div className="setting-row">
+                  <span className="setting-label">Height</span>
+                  <input type="range" className="slider" min="0.08" max="0.7" step="0.02" value={routeOptions.altitude} onChange={e => updateRouteOption('altitude', Number(e.target.value))} disabled={isPlaying} />
+                </div>
+                <div className="setting-row">
+                  <span className="setting-label">Motion</span>
+                  <select className="settings-select" value={routeOptions.animateTime} onChange={e => updateRouteOption('animateTime', Number(e.target.value))} disabled={isPlaying}>
+                    <option value={0}>Static</option>
+                    <option value={2400}>Slow dash</option>
+                    <option value={1400}>Medium dash</option>
+                    <option value={800}>Fast dash</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="effect-panel">
+                <label className="setting-row checkbox-row">
+                  <span className="setting-label">Switch Arrow</span>
+                  <input
+                    type="checkbox"
+                    checked={arrowOptions.enabled}
+                    onChange={e => updateArrowOption('enabled', e.target.checked)}
+                    disabled={isPlaying}
+                  />
+                </label>
+                <div className="setting-row">
+                  <span className="setting-label">Color</span>
+                  <input type="color" className="color-picker" value={arrowOptions.color} onChange={e => updateArrowOption('color', e.target.value)} disabled={isPlaying} />
+                </div>
+                <div className="setting-row">
+                  <span className="setting-label">Opacity</span>
+                  <input type="range" className="slider" min="0.1" max="1" step="0.05" value={arrowOptions.opacity} onChange={e => updateArrowOption('opacity', Number(e.target.value))} disabled={isPlaying} />
+                </div>
+                <div className="setting-row">
+                  <span className="setting-label">Size</span>
+                  <input type="range" className="slider" min="0.5" max="2.5" step="0.1" value={arrowOptions.size} onChange={e => updateArrowOption('size', Number(e.target.value))} disabled={isPlaying} />
+                </div>
+                <div className="setting-row">
+                  <span className="setting-label">Height</span>
+                  <input type="range" className="slider" min="0.12" max="0.8" step="0.02" value={arrowOptions.altitude} onChange={e => updateArrowOption('altitude', Number(e.target.value))} disabled={isPlaying} />
+                </div>
+                <div className="setting-row">
+                  <span className="setting-label">Speed</span>
+                  <input type="range" className="slider" min="0.4" max="2.4" step="0.1" value={arrowOptions.speed} onChange={e => updateArrowOption('speed', Number(e.target.value))} disabled={isPlaying} />
+                </div>
+              </div>
             </div>
 
             <div className="sidebar-divider" />
@@ -1384,6 +1495,21 @@ function App() {
                             <div className="setting-row">
                               <span className="setting-label">Info Size</span>
                               <input type="range" className="slider" min="18" max="72" value={country.textOptions.subtitleFontSize || 34} onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleFontSize', Number(e.target.value))} />
+                            </div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Info X</span>
+                              <input type="range" className="slider" min="-24" max="24" step="0.5" value={country.textOptions.subtitleOffsetX || 0} onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleOffsetX', Number(e.target.value))} />
+                            </div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Info Y</span>
+                              <input type="range" className="slider" min="-24" max="24" step="0.5" value={country.textOptions.subtitleOffsetY ?? -5} onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleOffsetY', Number(e.target.value))} />
+                            </div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Info Depth</span>
+                              <input type="range" className="slider" min="-0.04" max="0.18" step="0.01" value={country.textOptions.subtitleAltitude || 0} onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleAltitude', Number(e.target.value))} />
                             </div>
                           </div>
                         )}
