@@ -9,6 +9,8 @@ const GEOJSON_URL = 'https://raw.githubusercontent.com/vasturiano/react-globe.gl
 
 const DEFAULT_TEXT_OPTIONS = {
   fontSize: 64,
+  fontFamily: 'Outfit',
+  fontWeight: 700,
   textColor: '#ffffff',
   bgColor: '#0f172a',
   bgOpacity: 0.7,
@@ -16,8 +18,34 @@ const DEFAULT_TEXT_OPTIONS = {
   borderWidth: 2,
   borderRadius: 12,
   shadowBlur: 15,
-  labelAnimation: 'slideUp'
+  labelAnimation: 'slideUp',
+  subtitleText: '',
+  subtitleFontSize: 34,
+  subtitleFontFamily: 'Outfit',
+  subtitleFontWeight: 500,
+  subtitleTextColor: '#dbeafe',
+  subtitleBgColor: '#020617',
+  subtitleBgOpacity: 0.58,
+  subtitleAnimation: 'fadeInOut'
 };
+
+const FONT_OPTIONS = [
+  { value: 'Outfit', label: 'Outfit' },
+  { value: 'Inter', label: 'Inter' },
+  { value: 'Poppins', label: 'Poppins' },
+  { value: 'Montserrat', label: 'Montserrat' },
+  { value: 'Playfair Display', label: 'Playfair' },
+  { value: 'Roboto Slab', label: 'Roboto Slab' },
+  { value: 'Georgia', label: 'Georgia' },
+  { value: 'Arial', label: 'Arial' }
+];
+
+const FONT_WEIGHT_OPTIONS = [
+  { value: 400, label: 'Regular' },
+  { value: 500, label: 'Medium' },
+  { value: 600, label: 'Semi Bold' },
+  { value: 700, label: 'Bold' }
+];
 
 const LABEL_ANIMATION_OPTIONS = [
   { value: 'none', label: 'None' },
@@ -41,8 +69,8 @@ const QUALITY_OPTIONS = [
 ];
 
 const EXPORT_FORMAT_OPTIONS = [
-  { value: 'mp4', label: 'MP4 (H.264)' },
-  { value: 'webm', label: 'WebM' }
+  { value: 'webm', label: 'WebM (stable)' },
+  { value: 'mp4', label: 'MP4 (experimental)' }
 ];
 
 const RECORDING_MIME_CANDIDATES = {
@@ -147,11 +175,18 @@ const createTextSprite = (text, opts) => {
   const ctx = canvas.getContext('2d');
   
   const fontSize = opts.fontSize;
-  const fontFamily = 'Outfit, sans-serif';
+  const fontFamily = opts.fontFamily || 'Outfit';
+  const fontWeight = opts.fontWeight || 700;
+  const lines = String(text)
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  const textLines = lines.length > 0 ? lines : [''];
+  const lineHeight = fontSize * 1.18;
   
-  ctx.font = `bold ${fontSize}px ${fontFamily}`;
-  const textMetrics = ctx.measureText(text);
-  const textWidth = textMetrics.width;
+  ctx.font = `${fontWeight} ${fontSize}px "${fontFamily}", sans-serif`;
+  const textWidth = Math.max(...textLines.map(line => ctx.measureText(line).width));
   
   const paddingH = 32;
   const paddingV = 16;
@@ -159,14 +194,15 @@ const createTextSprite = (text, opts) => {
   const borderWidth = opts.borderWidth;
   
   const canvasW = textWidth + paddingH * 2 + shadowBlur * 2 + borderWidth * 2;
-  const canvasH = fontSize + paddingV * 2 + shadowBlur * 2 + borderWidth * 2;
+  const textBlockHeight = lineHeight * textLines.length;
+  const canvasH = textBlockHeight + paddingV * 2 + shadowBlur * 2 + borderWidth * 2;
   
   canvas.width = canvasW;
   canvas.height = canvasH;
   
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'center';
-  ctx.font = `bold ${fontSize}px ${fontFamily}`;
+  ctx.font = `${fontWeight} ${fontSize}px "${fontFamily}", sans-serif`;
   
   // Shadows
   ctx.shadowColor = 'rgba(0,0,0,0.8)';
@@ -182,7 +218,7 @@ const createTextSprite = (text, opts) => {
   const x = shadowBlur + borderWidth;
   const y = shadowBlur + borderWidth;
   const w = textWidth + paddingH * 2;
-  const h = fontSize + paddingV * 2;
+  const h = textBlockHeight + paddingV * 2;
   const r = opts.borderRadius;
   
   ctx.beginPath();
@@ -206,7 +242,10 @@ const createTextSprite = (text, opts) => {
   // Text
   ctx.fillStyle = opts.textColor;
   ctx.shadowColor = 'transparent';
-  ctx.fillText(text, canvas.width / 2, canvas.height / 2 + fontSize * 0.05);
+  const startY = canvas.height / 2 - ((textLines.length - 1) * lineHeight) / 2;
+  textLines.forEach((line, index) => {
+    ctx.fillText(line, canvas.width / 2, startY + index * lineHeight + fontSize * 0.05);
+  });
   
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
@@ -220,6 +259,34 @@ const createTextSprite = (text, opts) => {
   }
   
   sprite.scale.set(canvas.width * scaleFactor, canvas.height * scaleFactor, 1);
+  sprite.userData.baseScale = sprite.scale.clone();
+  return sprite;
+};
+
+const createArrowSprite = (color) => {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const size = 96;
+
+  canvas.width = size;
+  canvas.height = size;
+  ctx.translate(size / 2, size / 2);
+  ctx.fillStyle = color;
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.moveTo(32, 0);
+  ctx.lineTo(-22, -28);
+  ctx.lineTo(-10, 0);
+  ctx.lineTo(-22, 28);
+  ctx.closePath();
+  ctx.fill();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(7, 7, 1);
   sprite.userData.baseScale = sprite.scale.clone();
   return sprite;
 };
@@ -323,9 +390,11 @@ function App() {
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [previewQuality, setPreviewQuality] = useState('720p');
   const [exportQuality, setExportQuality] = useState('1080p');
-  const [exportFormat, setExportFormat] = useState('mp4');
+  const [exportFormat, setExportFormat] = useState('webm');
   const [fps, setFps] = useState(60);
   const [earthScale, setEarthScale] = useState(1);
+  const [showRouteLines, setShowRouteLines] = useState(true);
+  const [showTransitionArrow, setShowTransitionArrow] = useState(true);
   const [resetBeforePlay, setResetBeforePlay] = useState(true);
   const [cameraArrived, setCameraArrived] = useState(false);
   const [labelAnimationStart, setLabelAnimationStart] = useState(0);
@@ -748,6 +817,7 @@ function App() {
     if (!targetCountry) return [];
 
     const { lat, lng, maxSpan } = getCountryCenter(targetCountry);
+    const textOptions = targetCountry.textOptions;
     const layerItems = [{
       type: 'countryBorder',
       id: `border-${targetCountry.properties.ISO_A2}-${targetCountry.customColor}-${targetCountry.mapAnimationStyle}`,
@@ -755,6 +825,18 @@ function App() {
       color: targetCountry.customColor || '#4F46E5',
       animationStyle: targetCountry.mapAnimationStyle || 'borderMoving'
     }];
+
+    if (showTransitionArrow && isPlaying && currentAnimIndex > 0) {
+      layerItems.push({
+        type: 'transitionArrow',
+        id: `arrow-${targetCountry.properties.ISO_A2}-${targetCountry.customColor}`,
+        lat,
+        lng,
+        altitude: 0.16,
+        color: targetCountry.customColor || '#4F46E5',
+        animationStart: labelAnimationStart
+      });
+    }
 
     if (!cameraArrived) return layerItems;
 
@@ -766,11 +848,90 @@ function App() {
       altitude: 0.08, 
       text: targetCountry.properties.ADMIN,
       animationStart: labelAnimationStart,
-      opts: { ...targetCountry.textOptions, maxSpan } 
+      opts: { ...textOptions, maxSpan } 
     });
 
+    if (textOptions.subtitleText?.trim()) {
+      layerItems.push({
+        type: 'subtitle',
+        id: `subtitle-${targetCountry.properties.ISO_A2}-${JSON.stringify(targetCountry.textOptions)}`,
+        lat,
+        lng,
+        altitude: 0.075,
+        verticalOffset: Math.max(2.5, Math.min(maxSpan * 0.08, 9)),
+        text: textOptions.subtitleText.trim(),
+        animationStart: labelAnimationStart + 0.18,
+        opts: {
+          maxSpan,
+          fontSize: textOptions.subtitleFontSize,
+          fontFamily: textOptions.subtitleFontFamily,
+          fontWeight: textOptions.subtitleFontWeight,
+          textColor: textOptions.subtitleTextColor,
+          bgColor: textOptions.subtitleBgColor,
+          bgOpacity: textOptions.subtitleBgOpacity,
+          borderColor: textOptions.borderColor,
+          borderWidth: Math.max(1, Math.floor(textOptions.borderWidth / 2)),
+          borderRadius: textOptions.borderRadius,
+          shadowBlur: Math.max(8, textOptions.shadowBlur * 0.65),
+          labelAnimation: textOptions.subtitleAnimation
+        }
+      });
+    }
+
     return layerItems;
-  }, [activeCountry, cameraArrived, isPlaying, editingIso, selectedCountries, labelAnimationStart]);
+  }, [
+    activeCountry,
+    cameraArrived,
+    currentAnimIndex,
+    isPlaying,
+    editingIso,
+    selectedCountries,
+    labelAnimationStart,
+    showTransitionArrow
+  ]);
+
+  const arcData = useMemo(() => {
+    const arcs = [];
+
+    if (showRouteLines) {
+      for (let index = 1; index < selectedCountries.length; index += 1) {
+        const previous = selectedCountries[index - 1];
+        const next = selectedCountries[index];
+        const start = getCountryCenter(previous);
+        const end = getCountryCenter(next);
+
+        arcs.push({
+          id: `route-${previous.properties.ISO_A2}-${next.properties.ISO_A2}`,
+          type: 'route',
+          startLat: start.lat,
+          startLng: start.lng,
+          endLat: end.lat,
+          endLng: end.lng,
+          color: [hexToRgba(previous.customColor, 0.35), hexToRgba(next.customColor, 0.75)],
+          altitude: 0.28
+        });
+      }
+    }
+
+    if (showTransitionArrow && isPlaying && currentAnimIndex > 0 && activeCountry) {
+      const previous = selectedCountries[currentAnimIndex - 1];
+      const start = getCountryCenter(previous);
+      const end = getCountryCenter(activeCountry);
+
+      arcs.push({
+        id: `transition-${previous.properties.ISO_A2}-${activeCountry.properties.ISO_A2}`,
+        type: 'transition',
+        startLat: start.lat,
+        startLng: start.lng,
+        endLat: end.lat,
+        endLng: end.lng,
+        color: ['rgba(255, 255, 255, 0.2)', activeCountry.customColor],
+        altitude: 0.36
+      });
+    }
+
+    return arcs;
+  }, [activeCountry, currentAnimIndex, isPlaying, selectedCountries, showRouteLines, showTransitionArrow]);
 
   return (
     <div className="app-container">
@@ -799,10 +960,26 @@ function App() {
             polygonSideColor={() => 'rgba(0, 0, 0, 0.1)'}
             polygonStrokeColor={getPolygonStrokeColor}
             polygonsTransitionDuration={600}
+            arcsData={arcData}
+            arcStartLat="startLat"
+            arcStartLng="startLng"
+            arcEndLat="endLat"
+            arcEndLng="endLng"
+            arcColor="color"
+            arcAltitude="altitude"
+            arcStroke={(d) => d.type === 'transition' ? 0.8 : 0.35}
+            arcDashLength={(d) => d.type === 'transition' ? 0.28 : 0.9}
+            arcDashGap={(d) => d.type === 'transition' ? 0.08 : 0.15}
+            arcDashInitialGap={(d) => d.type === 'transition' ? 0 : 0.05}
+            arcDashAnimateTime={(d) => d.type === 'transition' ? 1200 : 0}
+            arcsTransitionDuration={800}
             customLayerData={customLayerData}
             customThreeObject={(d) => {
               if (d.type === 'countryBorder') {
                 return createCountryBorderObject(d.country, d.color, globeEl.current);
+              }
+              if (d.type === 'transitionArrow') {
+                return createArrowSprite(d.color);
               }
               return createTextSprite(d.text, d.opts);
             }}
@@ -831,6 +1008,23 @@ function App() {
                 return;
               }
 
+              if (d.type === 'transitionArrow') {
+                obj.userData.arrowData = d;
+                obj.onBeforeRender = () => {
+                  const arrowData = obj.userData.arrowData;
+                  const elapsed = Math.max(0, performance.now() / 1000 - arrowData.animationStart);
+                  const progress = easeOutCubic(elapsed / 0.75);
+                  const coords = globeEl.current?.getCoords(arrowData.lat, arrowData.lng, arrowData.altitude);
+                  if (coords) Object.assign(obj.position, coords);
+                  obj.material.opacity = 0.25 + progress * 0.75;
+                  obj.rotation.z = Math.sin(elapsed * 3) * 0.08;
+                  if (obj.userData.baseScale) {
+                    obj.scale.copy(obj.userData.baseScale).multiplyScalar(0.6 + progress * 0.4);
+                  }
+                };
+                return;
+              }
+
               obj.userData.labelData = d;
               obj.onBeforeRender = () => {
                 const labelData = obj.userData.labelData;
@@ -842,6 +1036,9 @@ function App() {
                   labelData.altitude + animation.altitudeOffset
                 );
                 if (coords) Object.assign(obj.position, coords);
+                if (labelData.verticalOffset) {
+                  obj.position.y -= labelData.verticalOffset;
+                }
                 obj.material.opacity = animation.opacity;
                 if (obj.userData.baseScale) {
                   obj.scale.copy(obj.userData.baseScale).multiplyScalar(animation.scale);
@@ -952,6 +1149,24 @@ function App() {
                   <span className="slider-value">{earthScale.toFixed(1)}x</span>
                 </div>
               </div>
+              <label className="setting-row checkbox-row">
+                <span className="setting-label">Route Lines</span>
+                <input
+                  type="checkbox"
+                  checked={showRouteLines}
+                  onChange={e => setShowRouteLines(e.target.checked)}
+                  disabled={isPlaying}
+                />
+              </label>
+              <label className="setting-row checkbox-row">
+                <span className="setting-label">Switch Arrow</span>
+                <input
+                  type="checkbox"
+                  checked={showTransitionArrow}
+                  onChange={e => setShowTransitionArrow(e.target.checked)}
+                  disabled={isPlaying}
+                />
+              </label>
               <label className="setting-row checkbox-row">
                 <span className="setting-label">Fresh Start</span>
                 <input
@@ -1068,6 +1283,24 @@ function App() {
                             </div>
 
                             <div className="panel-header">Label Options</div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Font</span>
+                              <select className="settings-select" value={country.textOptions.fontFamily || 'Outfit'} onChange={e => updateTextOpts(country.properties.ISO_A2, 'fontFamily', e.target.value)}>
+                                {FONT_OPTIONS.map(option => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Weight</span>
+                              <select className="settings-select" value={country.textOptions.fontWeight || 700} onChange={e => updateTextOpts(country.properties.ISO_A2, 'fontWeight', Number(e.target.value))}>
+                                {FONT_WEIGHT_OPTIONS.map(option => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </div>
                             
                             <div className="setting-row">
                               <span className="setting-label">Text Color</span>
@@ -1093,6 +1326,64 @@ function App() {
                             <div className="setting-row">
                               <span className="setting-label">Size</span>
                               <input type="range" className="slider" min="32" max="120" value={country.textOptions.fontSize} onChange={e => updateTextOpts(country.properties.ISO_A2, 'fontSize', Number(e.target.value))} />
+                            </div>
+
+                            <div className="panel-header">Info Text</div>
+
+                            <div className="setting-row stacked-row">
+                              <span className="setting-label">Text</span>
+                              <textarea
+                                className="text-input textarea-input"
+                                rows={2}
+                                placeholder="Add extra information..."
+                                value={country.textOptions.subtitleText || ''}
+                                onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleText', e.target.value)}
+                              />
+                            </div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Motion</span>
+                              <select className="settings-select" value={country.textOptions.subtitleAnimation || 'fadeInOut'} onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleAnimation', e.target.value)}>
+                                {LABEL_ANIMATION_OPTIONS.map(option => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Font</span>
+                              <select className="settings-select" value={country.textOptions.subtitleFontFamily || 'Outfit'} onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleFontFamily', e.target.value)}>
+                                {FONT_OPTIONS.map(option => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Weight</span>
+                              <select className="settings-select" value={country.textOptions.subtitleFontWeight || 500} onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleFontWeight', Number(e.target.value))}>
+                                {FONT_WEIGHT_OPTIONS.map(option => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Info Color</span>
+                              <input type="color" className="color-picker" value={country.textOptions.subtitleTextColor || '#dbeafe'} onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleTextColor', e.target.value)} />
+                            </div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Info Bg</span>
+                              <div className="setting-inline">
+                                <input type="color" className="color-picker" value={country.textOptions.subtitleBgColor || '#020617'} onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleBgColor', e.target.value)} />
+                                <input type="range" className="slider" min="0" max="1" step="0.1" value={country.textOptions.subtitleBgOpacity ?? 0.58} onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleBgOpacity', Number(e.target.value))} />
+                              </div>
+                            </div>
+
+                            <div className="setting-row">
+                              <span className="setting-label">Info Size</span>
+                              <input type="range" className="slider" min="18" max="72" value={country.textOptions.subtitleFontSize || 34} onChange={e => updateTextOpts(country.properties.ISO_A2, 'subtitleFontSize', Number(e.target.value))} />
                             </div>
                           </div>
                         )}
