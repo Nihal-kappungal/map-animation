@@ -185,6 +185,8 @@ const getCountryCenter = (country) => {
 
 const clamp = (value, min = 0, max = 1) => Math.min(Math.max(value, min), max);
 const easeOutCubic = (value) => 1 - Math.pow(1 - clamp(value), 3);
+const delay = (ms) => new Promise(resolve => window.setTimeout(resolve, ms));
+const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
 
 const hexToRgba = (hex, alpha) => {
   const r = parseInt(hex.slice(1, 3), 16) || 0;
@@ -415,6 +417,7 @@ function App() {
   const playStartTimeoutRef = useRef(null);
   const recordingFrameRef = useRef(null);
   const captureFrameLoopRef = useRef(null);
+  const sequenceTokenRef = useRef(0);
   const [scale, setScale] = useState(1);
 
   const activeCountry = useMemo(() => {
@@ -627,48 +630,11 @@ function App() {
   }, []);
 
   useEffect(() => () => {
+    sequenceTokenRef.current += 1;
     window.clearTimeout(playStartTimeoutRef.current);
     if (recordingFrameRef.current) cancelAnimationFrame(recordingFrameRef.current);
     if (captureFrameLoopRef.current) cancelAnimationFrame(captureFrameLoopRef.current);
   }, []);
-
-  useEffect(() => {
-    let timeoutId1, timeoutId2;
-    
-    if (isPlaying && selectedCountries.length > 0) {
-      if (currentAnimIndex >= 0 && currentAnimIndex < selectedCountries.length) {
-        const targetCountry = selectedCountries[currentAnimIndex];
-        
-        flyToCountry(targetCountry, 2500);
-
-        timeoutId1 = setTimeout(() => {
-          revealLabel();
-
-          if (currentAnimIndex === selectedCountries.length - 1) {
-            timeoutId2 = setTimeout(() => {
-              setIsPlaying(false);
-              setCurrentAnimIndex(-1);
-              setCameraArrived(false);
-              stopRecording();
-              if (globeEl.current) {
-                 globeEl.current.pointOfView({ lat: 18, lng: 0, altitude: 2.5 / earthScale }, 2000);
-              }
-            }, 3000);
-          } else {
-            timeoutId2 = setTimeout(() => {
-               setCameraArrived(false);
-               setCurrentAnimIndex(prev => prev + 1);
-            }, 3000);
-          }
-        }, 2500);
-      }
-    }
-    
-    return () => {
-      clearTimeout(timeoutId1);
-      clearTimeout(timeoutId2);
-    };
-  }, [isPlaying, currentAnimIndex, selectedCountries, earthScale, flyToCountry, revealLabel, stopRecording]);
 
   const startRecording = useCallback(() => {
     recordedChunksRef.current = [];
@@ -749,8 +715,11 @@ function App() {
     }
   }, [exportFormat, exportQuality, fps]);
 
-  const handlePlay = () => {
+  const handlePlay = async () => {
     if (selectedCountries.length === 0) return;
+    const countriesToPlay = selectedCountries;
+    const token = sequenceTokenRef.current + 1;
+    sequenceTokenRef.current = token;
     window.clearTimeout(playStartTimeoutRef.current);
     if (recordingFrameRef.current) cancelAnimationFrame(recordingFrameRef.current);
 
@@ -762,20 +731,42 @@ function App() {
 
     if (resetBeforePlay) {
       resetCameraView(900);
+      await delay(950);
+      if (sequenceTokenRef.current !== token) return;
     }
 
-    recordingFrameRef.current = requestAnimationFrame(() => {
-      recordingFrameRef.current = requestAnimationFrame(() => {
-        startRecording();
-      });
-    });
+    await nextFrame();
+    await nextFrame();
+    if (sequenceTokenRef.current !== token) return;
 
-    playStartTimeoutRef.current = window.setTimeout(() => {
-      setCurrentAnimIndex(0);
-    }, resetBeforePlay ? 950 : 0);
+    startRecording();
+
+    for (let index = 0; index < countriesToPlay.length; index += 1) {
+      if (sequenceTokenRef.current !== token) return;
+
+      setCameraArrived(false);
+      setCurrentAnimIndex(index);
+      flyToCountry(countriesToPlay[index], 2500);
+
+      await delay(2550);
+      if (sequenceTokenRef.current !== token) return;
+
+      revealLabel();
+
+      await delay(3000);
+    }
+
+    if (sequenceTokenRef.current !== token) return;
+
+    setIsPlaying(false);
+    setCurrentAnimIndex(-1);
+    setCameraArrived(false);
+    stopRecording();
+    resetCameraView(2000);
   };
   
   const handleStop = () => {
+    sequenceTokenRef.current += 1;
     window.clearTimeout(playStartTimeoutRef.current);
     if (recordingFrameRef.current) cancelAnimationFrame(recordingFrameRef.current);
     setIsPlaying(false);
@@ -1041,37 +1032,44 @@ function App() {
               if (d.type === 'transitionArrow') {
                 obj.userData.arrowData = d;
                 obj.onBeforeRender = () => {
-                  const arrowData = obj.userData.arrowData;
-                  const options = arrowData.options;
-                  const elapsed = Math.max(0, performance.now() / 1000 - arrowData.animationStart);
-                  const progress = easeOutCubic(Math.min(elapsed * options.speed / 1.35, 1));
-                  const startCoords = globeEl.current?.getCoords(arrowData.startLat, arrowData.startLng, 0);
-                  const endCoords = globeEl.current?.getCoords(arrowData.endLat, arrowData.endLng, 0);
-                  if (!startCoords || !endCoords) return;
+                  try {
+                    const arrowData = obj.userData.arrowData;
+                    const options = arrowData.options;
+                    const elapsed = Math.max(0, performance.now() / 1000 - arrowData.animationStart);
+                    const progress = easeOutCubic(Math.min(elapsed * options.speed / 1.35, 1));
+                    const startCoords = globeEl.current?.getCoords(arrowData.startLat, arrowData.startLng, 0);
+                    const endCoords = globeEl.current?.getCoords(arrowData.endLat, arrowData.endLng, 0);
+                    if (!startCoords || !endCoords) return;
 
-                  const startVector = new THREE.Vector3(startCoords.x, startCoords.y, startCoords.z);
-                  const endVector = new THREE.Vector3(endCoords.x, endCoords.y, endCoords.z);
-                  const startDirection = startVector.clone().normalize();
-                  const endDirection = endVector.clone().normalize();
-                  const radius = startVector.length();
-                  const height = 1 + options.altitude + Math.sin(progress * Math.PI) * 0.18;
-                  const currentDirection = startDirection.clone().slerp(endDirection, progress).normalize();
-                  const tangentProgress = progress > 0.985
-                    ? Math.max(progress - 0.015, 0)
-                    : Math.min(progress + 0.015, 1);
-                  const nextDirection = startDirection.clone().slerp(endDirection, tangentProgress).normalize();
-                  const position = currentDirection.clone().multiplyScalar(radius * height);
-                  const nextPosition = nextDirection.clone().multiplyScalar(radius * height);
-                  const tangent = progress > 0.985
-                    ? position.clone().sub(nextPosition).normalize()
-                    : nextPosition.sub(position).normalize();
+                    const startVector = new THREE.Vector3(startCoords.x, startCoords.y, startCoords.z);
+                    const endVector = new THREE.Vector3(endCoords.x, endCoords.y, endCoords.z);
+                    const radius = startVector.length();
+                    if (!Number.isFinite(radius) || radius <= 0) return;
 
-                  obj.position.copy(position);
-                  obj.quaternion.setFromUnitVectors(obj.userData.forward, tangent);
-                  obj.material.color.set(options.color);
-                  obj.material.opacity = options.opacity;
-                  const scale = 0.75 + Math.sin(progress * Math.PI) * 0.22;
-                  obj.scale.setScalar(scale);
+                    const startDirection = startVector.clone().normalize();
+                    const endDirection = endVector.clone().normalize();
+                    const height = 1 + options.altitude + Math.sin(progress * Math.PI) * 0.18;
+                    const currentDirection = startDirection.clone().slerp(endDirection, progress).normalize();
+                    const tangentProgress = progress > 0.985
+                      ? Math.max(progress - 0.015, 0)
+                      : Math.min(progress + 0.015, 1);
+                    const nextDirection = startDirection.clone().slerp(endDirection, tangentProgress).normalize();
+                    const position = currentDirection.clone().multiplyScalar(radius * height);
+                    const nextPosition = nextDirection.clone().multiplyScalar(radius * height);
+                    const tangent = progress > 0.985
+                      ? position.clone().sub(nextPosition).normalize()
+                      : nextPosition.sub(position).normalize();
+                    if (!Number.isFinite(tangent.x + tangent.y + tangent.z) || tangent.lengthSq() === 0) return;
+
+                    obj.position.copy(position);
+                    obj.quaternion.setFromUnitVectors(obj.userData.forward, tangent);
+                    obj.material.color.set(options.color);
+                    obj.material.opacity = options.opacity;
+                    const scale = 0.75 + Math.sin(progress * Math.PI) * 0.22;
+                    obj.scale.setScalar(scale);
+                  } catch (error) {
+                    console.warn('Skipping arrow frame', error);
+                  }
                 };
                 return;
               }
@@ -1087,7 +1085,7 @@ function App() {
                   labelData.altitude + (labelData.opts.subtitleAltitude || 0) + animation.altitudeOffset
                 );
                 if (coords) Object.assign(obj.position, coords);
-                if (labelData.offsetX || labelData.offsetY) {
+                if ((labelData.offsetX || labelData.offsetY) && camera) {
                   const screenRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
                   const screenUp = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
                   obj.position.addScaledVector(screenRight, labelData.offsetX || 0);
